@@ -12,6 +12,7 @@ import (
 
 	"github.com/beevik/etree"
 	"github.com/use-go/onvif/device"
+	"github.com/use-go/onvif/event"
 	"github.com/use-go/onvif/gosoap"
 	"github.com/use-go/onvif/networking"
 	wsdiscovery "github.com/use-go/onvif/ws-discovery"
@@ -264,6 +265,10 @@ func (dev Device) CallMethod(method interface{}) (*http.Response, error) {
 	endpoint, err := dev.getEndpoint(pkg)
 	if err != nil {
 		return nil, err
+	}
+
+	if pm, ok := method.(event.PullMessages); ok {
+		endpoint = pm.Address
 	}
 	return dev.callMethodDo(endpoint, method)
 }
