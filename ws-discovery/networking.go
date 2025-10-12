@@ -13,6 +13,7 @@ import (
 	"errors"
 	"net"
 	"os"
+	"runtime"
 	"time"
 
 	"github.com/gofrs/uuid"
@@ -21,27 +22,9 @@ import (
 
 const bufSize = 8192
 
-//SendProbe to device
 func SendProbe(interfaceName string, scopes, types []string, namespaces map[string]string) ([]string, error) {
-	// Creating UUID Version 4
 	uuidV4 := uuid.Must(uuid.NewV4())
-	//fmt.Printf("UUIDv4: %s\n", uuidV4)
-
 	probeSOAP := buildProbeMessage(uuidV4.String(), scopes, types, namespaces)
-	//probeSOAP = `<?xml version="1.0" encoding="UTF-8"?>
-	//<Envelope xmlns="http://www.w3.org/2003/05/soap-envelope" xmlns:a="http://schemas.xmlsoap.org/ws/2004/08/addressing">
-	//<Header>
-	//<a:Action mustUnderstand="1">http://schemas.xmlsoap.org/ws/2005/04/discovery/Probe</a:Action>
-	//<a:MessageID>uuid:78a2ed98-bc1f-4b08-9668-094fcba81e35</a:MessageID><a:ReplyTo>
-	//<a:Address>http://schemas.xmlsoap.org/ws/2004/08/addressing/role/anonymous</a:Address>
-	//</a:ReplyTo><a:To mustUnderstand="1">urn:schemas-xmlsoap-org:ws:2005:04:discovery</a:To>
-	//</Header>
-	//<Body><Probe xmlns="http://schemas.xmlsoap.org/ws/2005/04/discovery">
-	//<d:Types xmlns:d="http://schemas.xmlsoap.org/ws/2005/04/discovery" xmlns:dp0="http://www.onvif.org/ver10/network/wsdl">dp0:NetworkVideoTransmitter</d:Types>
-	//</Probe>
-	//</Body>
-	//</Envelope>`
-
 	return sendUDPMulticast(probeSOAP.String(), interfaceName)
 }
 
@@ -52,44 +35,46 @@ func sendUDPMulticast(msg string, interfaceName string) ([]string, error) {
 	}
 	defer c.Close()
 
-	iface, err := net.InterfaceByName(interfaceName)
-	if err != nil {
-		return nil, err
-	}
-
 	p := ipv4.NewPacketConn(c)
-	group := net.IPv4(239, 255, 255, 250)
-	if err := p.JoinGroup(iface, &net.UDPAddr{IP: group}); err != nil {
-		return nil, err
-	}
+	defer p.Close()
 
+	group := net.IPv4(239, 255, 255, 250)
 	dst := &net.UDPAddr{IP: group, Port: 3702}
 	data := []byte(msg)
-	for _, ifi := range []*net.Interface{iface} {
-		if err := p.SetMulticastInterface(ifi); err != nil {
-			return nil, err
+
+	// Android: avoid net.InterfaceByName (blocked by SELinux netlink routing).
+	// For Probe, you can skip JoinGroup and interface selection entirely.
+	if runtime.GOOS != "android" && interfaceName != "" {
+		ifi, err := net.InterfaceByName(interfaceName)
+		if err == nil {
+			_ = p.JoinGroup(ifi, &net.UDPAddr{IP: group})
+			_ = p.SetMulticastInterface(ifi)
 		}
-		p.SetMulticastTTL(2)
-		if _, err := p.WriteTo(data, nil, dst); err != nil {
-			return nil, err
-		}
+		// If lookup fails, continue without interface binding.
 	}
 
-	if err := p.SetReadDeadline(time.Now().Add(time.Second * 1)); err != nil {
+	_ = p.SetMulticastTTL(2)
+
+	if _, err := p.WriteTo(data, nil, dst); err != nil {
+		return nil, err
+	}
+
+	// Bump timeout to improve reliability on real networks
+	if err := p.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
 		return nil, err
 	}
 
 	var result []string
+	buf := make([]byte, bufSize)
 	for {
-		b := make([]byte, bufSize)
-		n, _, _, err := p.ReadFrom(b)
+		n, _, _, err := p.ReadFrom(buf)
 		if err != nil {
 			if !errors.Is(err, os.ErrDeadlineExceeded) {
 				return nil, err
 			}
 			break
 		}
-		result = append(result, string(b[0:n]))
+		result = append(result, string(buf[:n]))
 	}
 	return result, nil
 }
