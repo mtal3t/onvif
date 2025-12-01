@@ -94,7 +94,7 @@ type PullMessages struct {
 	XMLName      string       `xml:"tev:PullMessages"`
 	Timeout      xsd.Duration `xml:"tev:Timeout"`
 	MessageLimit xsd.Int      `xml:"tev:MessageLimit"`
-	Address      string
+	Address      string       `xml:"-"`
 }
 
 // PullMessagesResponse response type

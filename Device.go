@@ -293,5 +293,11 @@ func (dev Device) callMethodDo(endpoint string, method interface{}) (*http.Respo
 		soap.AddWSSecurity(dev.params.Username, dev.params.Password)
 	}
 
+	if _, ok := method.(event.PullMessages); ok {
+		toHeader := `<wsa:To>` + endpoint + `</wsa:To>`
+		soap.AddStringHeaderContent(toHeader)
+		endpoint = strings.ReplaceAll(endpoint, "\t", "")
+	}
+
 	return networking.SendSoap(dev.params.HttpClient, endpoint, soap.String())
 }
