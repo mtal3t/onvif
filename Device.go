@@ -87,6 +87,13 @@ type DeviceParams struct {
 	Username   string
 	Password   string
 	HttpClient *http.Client
+	// EndpointRefAddress is the ONVIF WS-Discovery wsa:EndpointReference/wsa:Address
+	// (typically a urn:uuid:...). Per ONVIF Core spec it is globally unique and stable
+	// across IP/hostname changes, which makes it the correct identity for reconciling
+	// a persisted device record against a freshly discovered one after DHCP churn.
+	// Populated by GetAvailableDevicesAtSpecificEthernetInterface; empty when
+	// constructing a Device directly from a known XAddr.
+	EndpointRefAddress string
 }
 
 // GetServices return available endpoints
@@ -129,16 +136,32 @@ func GetAvailableDevicesAtSpecificEthernetInterface(interfaceName string) ([]Dev
 			return nil, err
 		}
 
-		for _, xaddr := range doc.Root().FindElements("./Body/ProbeMatches/ProbeMatch/XAddrs") {
-			xaddr := strings.Split(strings.Split(xaddr.Text(), " ")[0], "/")[2]
-			if !nvtDevicesSeen[xaddr] {
-				dev, err := NewDevice(DeviceParams{Xaddr: strings.Split(xaddr, " ")[0]})
-				if err != nil {
-					// TODO(jfsmig) print a warning
-				} else {
-					nvtDevicesSeen[xaddr] = true
-					nvtDevices = append(nvtDevices, *dev)
-				}
+		for _, match := range doc.Root().FindElements("./Body/ProbeMatches/ProbeMatch") {
+			xaddrsEl := match.FindElement("./XAddrs")
+			if xaddrsEl == nil {
+				continue
+			}
+			xaddr := strings.Split(strings.Split(xaddrsEl.Text(), " ")[0], "/")[2]
+			if nvtDevicesSeen[xaddr] {
+				continue
+			}
+			// Per ONVIF Core spec, every ProbeMatch carries a stable
+			// wsa:EndpointReference/wsa:Address (typically urn:uuid:...).
+			// Capture it so callers can reconcile by identity rather than IP,
+			// which is needed to handle DHCP lease changes on deployed cameras.
+			var epr string
+			if addrEl := match.FindElement("./EndpointReference/Address"); addrEl != nil {
+				epr = strings.TrimSpace(addrEl.Text())
+			}
+			dev, err := NewDevice(DeviceParams{
+				Xaddr:              strings.Split(xaddr, " ")[0],
+				EndpointRefAddress: epr,
+			})
+			if err != nil {
+				// TODO(jfsmig) print a warning
+			} else {
+				nvtDevicesSeen[xaddr] = true
+				nvtDevices = append(nvtDevices, *dev)
 			}
 		}
 	}
